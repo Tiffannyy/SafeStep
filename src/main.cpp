@@ -7,6 +7,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
+
 #include <WiFi.h>
 #include <HTTPClient.h>
 
@@ -21,7 +22,7 @@ const char* WEBHOOK_SECRET = "group5-secret";                              // MU
 
 // Button constants
 const int BUTTON_PIN = 0;                         // CHANGE THIS to actual button pin. <--- !!!
-  // NOTE: current implementation uses INPUT_PULLUP. So button is connected to BUTTON_PIN and GND. Reads LOW when pressed. <--- !!!
+// NOTE: current implementation uses INPUT_PULLUP. So button is connected to BUTTON_PIN and GND. Reads LOW when pressed. <--- !!!
 const unsigned long LONG_PRESS_MS = 3000;         // hold time to trigger webhook
 const unsigned long DEBOUNCE_MS    = 40;          // debounce window
 
@@ -44,15 +45,22 @@ const unsigned long stepDelay = 400;  // delay between recorded steps
 
 // ** fall detection variables **
 // Fall detection parameters
-const float FREE_FALL_THRESHOLD = 4.9;  // m/2^2
-const float IMPACT_THRESHOLD = 18.6;      // m/s^2   normal force + sudden change in acceleration
+const float FREE_FALL_THRESHOLD = 4.9;        // m/2^2
+const float IMPACT_THRESHOLD = 18.6;          // m/s^2   normal force + sudden change in acceleration
 const unsigned long FALL_TIME_WINDOW = 1000;  // ms time window after free fall
 unsigned long freeFallTime = 0;
 bool freeFallDetected = false;
 
 // BME280 variables
 const int delayTime = 10000; // delay between readings
-unsigned long startTime = millis();
+unsigned long startTimeBME = millis();
+unsigned long startTimeHB = millis();
+
+// MAX30102 variables
+const byte RATE_SIZE = 4;   // can increase for more accurate avg
+byte rates(RATE_SIZE);      // array of hb
+byte rateSpot = 0;
+long lastBeat = 0;          // time at which last hb occured
 
 // Button variables
 bool pressedStable = false;             // updated if button is held past debounce length
@@ -60,22 +68,22 @@ bool sentForThisHold = false;           // only sends one webhook per button pre
 unsigned long lastEdgeMs = 0;           // last time raw input toggled
 unsigned long pressStartMs = 0;         // when the current press started
 
+float BPM;
+int beatAvg;
+
 // Function prototypes
 void stepTracker(unsigned long now);
 void fallDetector(unsigned long now);
 void bmeRead(unsigned long now);
-<<<<<<< HEAD
 
-// Hekper function prototypes
+// Helper function prototypes
 float calculatePitch(const sensors_event_t& accel);
 float calculateRoll(const sensors_event_t& accel);
 bool isOrientationFall(const sensors_event_t& accel);
-=======
 void connectWiFi();
 void sendWebhook(const String& event, const String& msg);
 void handleButton(unsigned long now);
 static inline bool readPressedRaw();
->>>>>>> origin/main
 
 // Begin program
 void setup() {
@@ -97,22 +105,28 @@ void setup() {
 
   // Wait for devices
   if (!mpu.begin()) {
-    Serial.println("Failed to find MPU6050 chip");
+    Serial.println("Failed to find MPU6050...");
 
-    while (1) {
-      delay(10); // halt if MPU6050 not found
-    }
+    while (1) delay(1000);
   }
 
   if (!bme.begin()){
-    Serial.println("Could not find a valid BME280 sensor, check wiring!");
-    while (1) {
-      delay(10); // halt if BME280 not found
-    }
+    Serial.println("Failed to find BME280...");
+    while (1) delay(1000);
   }
+
+  if (!max30102.begin(Wire, I2C_SPEED_FAST)){
+    Serial.println("Failed to find MAX30102");
+    while (1) delay(1000);
+  }
+
   // initialize sesnors
   mpu_accel = mpu.getAccelerometerSensor();
   mpu_gyro = mpu.getGyroSensor();
+
+  max30102.setup();
+  max30102.setPulseAmplitudeRed(0x0A);      // turn red LED to low to indicate sensor works
+  max30102.setPulseAmplitudeGreen(0);       // turn off green LED
 
   // connect to wifi
   connectWiFi();
@@ -127,16 +141,15 @@ void loop() {
 
   // MPU6050 step tracker
   stepTracker(now);
-<<<<<<< HEAD
   // MPU6050 fall detection
   fallDetector(now);
+  // bme temp and humidity read
+  bmeRead(now);
+  // heartbeat
+  heartbeat(now);
 
-=======
   // check for button press. If pressed, send webhook
   handleButton(now);
-  // bme temp and humidity read
->>>>>>> origin/main
-  bmeRead(now);
 
 }
 
@@ -207,11 +220,9 @@ void fallDetector(unsigned long now) {
 
 
 // temp and humidity read
-}
-
 void bmeRead(unsigned long now){
-  if (now - startTime > delayTime){
-    startTime = now;
+  if (now - startTimeBME > delayTime){
+    startTimeBME = now;
 
     float hum   = bme.readHumidity();
     float tempC = bme.readTemperature();
@@ -227,8 +238,6 @@ void bmeRead(unsigned long now){
     tft.printf("\nHumidity:\n%.2f %%\n", hum);
   }
 }
-
-<<<<<<< HEAD
 
 // Helper functions for fall detection
 float calculatePitch(const sensors_event_t& accel) {
@@ -254,7 +263,36 @@ bool isOrientationFall(const sensors_event_t& accel) {
   }
   return false;
 }
-=======
+
+// Helper function for heartbeat
+void heartbeat(unsigned long now){
+  long irValue = max30102.getIR();      // infrared
+
+  if (checkForBeat(irValue)){
+    // hb sensed
+    long delta = now - lastBeat;
+    lastBeat = now;
+
+    BPM = 60 / (delta / 1000.0);
+
+    if (BPM < 255 && BPM > 20){
+      rates[rateSpot++] = (byte)BPM;    // store reading in array
+      rateSpot %= RATE_SIZE;
+
+      // take avg
+      beatAvg = 0;
+      for (byte x = 0; x < RATE_SIZE; x++)
+        beatAvg += rates[x]
+      beatAvg /= RATE_SIZE;
+    }
+
+  }
+  // TODO: add structs for each sensor so we can move multiple variables btwn functions
+  // if (now - startTimeBME > delayTime)
+}
+
+
+// Helper functions for button handling
 static inline bool readPressedRaw() {
   return digitalRead(BUTTON_PIN) == LOW;
 }
@@ -308,6 +346,7 @@ void handleButton(unsigned long now) {
       // heart rate (placeholder, replace with real MAX30105 readings)
       float heartRate = 0; // TODO: implement MAX30105 heart rate reading
 
+      // TODO: Combine functions
       // build combined message
       String msg = "Help button held for 3s\n";
       msg += "Temp: " + String(tempC, 2) + " C / " + String(tempF, 2) + " F\n";
@@ -366,4 +405,3 @@ void sendWebhook(const String& event, const String& msg) {
   Serial.printf("[WEBHOOK] POST %d %s\n", code, body.c_str());
   http.end();
 }
->>>>>>> origin/main
