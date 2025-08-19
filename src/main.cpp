@@ -21,7 +21,7 @@ TFT_eSPI tft = TFT_eSPI();  // TFT display
 // MPU variables
 int steps = 0;                        // step count
 // ** acceleration thresholds for step detection **
-float upperThreshold = 3.5;           // threshold for step start
+float upperThreshold = 3.0;           // threshold for step start
 float lowerThreshold = 1.0;           // threshold for reset
 
 bool repeatFlag = false;              // bool to prevent multiple steps recorded in one step
@@ -191,10 +191,14 @@ void bmeRead(unsigned long now){
 
 // Helper functions for fall detection
 float calculatePitch(const sensors_event_t& accel) {
+  // uses arctangent to calculate pitch angle
+  // pitch is nose to tail
   return atan2(-accel.acceleration.x, sqrt(accel.acceleration.y * accel.acceleration.y + accel.acceleration.z * accel.acceleration.z)) * 180.0 / PI;
 }
 
 float calculateRoll(const sensors_event_t& accel) {
+  // uses arctangent to calculate roll angle
+  // roll is wing to wing
   return atan2(accel.acceleration.y, accel.acceleration.z) * 180.0 / PI;
 }
 
