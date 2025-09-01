@@ -2,25 +2,31 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
+
 #include <WiFi.h>
 #include <HTTPClient.h>
 
 // definitions
 #define SEALEVELPRESSURE_HPA (1013.25)  // bme
+#define WEBHOOK_URL "https://webhook-server-rosy.vercel.app/api/alert"      // vercel URL
+
+// TFT variables
+unsigned long lastUpdate = 0;
+const unsigned long UPDATE_INTERVAL = 500; // ms
 
 // Webhook configuration
 const char* WIFI_SSID      = "wifi id"; // CHANGE THIS TO MATCH WIFI <--- !!!
 const char* WIFI_PASS      = "wifi password";
-#define WEBHOOK_URL "https://webhook-server-rosy.vercel.app/api/alert"      // vercel URL
 const char* WEBHOOK_SECRET = "group5-secret";                               // MUST match Vercel env var WEBHOOK_SECRET
 
 // Button constants
 const int BUTTON_PIN = 25;                         // CHANGE THIS to actual button pin. <--- !!!
-  // NOTE: current implementation uses INPUT_PULLUP. So button is connected to BUTTON_PIN and GND. Reads LOW when pressed. <--- !!!
+// NOTE: current implementation uses INPUT_PULLUP. So button is connected to BUTTON_PIN and GND. Reads LOW when pressed. <--- !!!
 const unsigned long LONG_PRESS_MS = 3000;         // hold time to trigger webhook
 const unsigned long DEBOUNCE_MS    = 40;          // debounce window
 
-// Display initialization
+// Sensor and display initialization
+SensorData sensorData;
 TFT_eSPI tft = TFT_eSPI();  // TFT display
 
 // Button variables
@@ -29,10 +35,14 @@ bool sentForThisHold = false;           // only sends one webhook per button pre
 unsigned long lastEdgeMs = 0;           // last time raw input toggled
 unsigned long pressStartMs = 0;         // when the current press started
 
+float BPM;
+int beatAvg;
+
 // Function prototypes
+void displayData(const SensorData& data);
 void connectWiFi();
 void sendWebhook(const String& event, const String& msg);
-void handleButton(unsigned long now);
+void handleButton(unsigned long now, const SensorData& data);
 static inline bool readPressedRaw();
 
 // Begin program
@@ -55,21 +65,28 @@ void setup() {
 
   // Wait for devices
   if (!mpu.begin()) {
-    Serial.println("Failed to find MPU6050 chip");
+    Serial.println("Failed to find MPU6050...");
 
-    while (1) {
-      delay(10); // halt if MPU6050 not found
-    }
+    while (1) delay(1000);
   }
 
   if (!bme.begin()){
-    Serial.println("Could not find a valid BME280 sensor, check wiring!");
-    while (1) {
-      delay(10); // halt if BME280 not found
-    }
+    Serial.println("Failed to find BME280...");
+    while (1) delay(1000);
   }
+
+  if (!max30102.begin(Wire, I2C_SPEED_FAST)){
+    Serial.println("Failed to find MAX30102");
+    while (1) delay(1000);
+  }
+
   // initialize sesnors
   mpu_accel = mpu.getAccelerometerSensor();
+  mpu_gyro = mpu.getGyroSensor();
+
+  max30102.setup();
+  max30102.setPulseAmplitudeRed(0x0A);      // turn red LED to low to indicate sensor works
+  max30102.setPulseAmplitudeGreen(0);       // turn off green LED
 
   // connect to wifi
   connectWiFi();
@@ -77,25 +94,51 @@ void setup() {
   tft.println("Booting...");
 }
 
+
 void loop() {
   // current time
   unsigned long now = millis();
 
   // MPU6050 step tracker
-  stepTracker(now);
+  stepTracker(now, sensorData);
+  // MPU6050 fall detection
+  fallDetector(now, sensorData);
+  // bme temp and humidity read
+  bmeRead(now, sensorData);
+  // heartbeat
+  heartbeat(now, sensorData);
 
   // check for button press. If pressed, send webhook
-  handleButton(now);
-
-  bmeRead(now);
+  handleButton(now, sensorData);
+  
+  if (now - lastUpdate >= UPDATE_INTERVAL){
+    displayData(sensorData);
+    lastUpdate = now;
+  }
 }
 
+// Display data
+void displayData(const SensorData& data){
+    // display temp
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor(0, 0);
+    tft.printf("Temp:\n%.2f C\n", data.tempC);
+    tft.printf("%.2f F\n", data.tempF);
+
+    // display humidity
+    tft.printf("\nHumidity:\n%.2f %%\n", data.humidity);
+
+    // display heart rate
+    tft.printf("\n\nBPM:%d\n", data.heartRate);
+}
+
+// Helper functions for button handling
 static inline bool readPressedRaw() {
   return digitalRead(BUTTON_PIN) == LOW;
 }
 
 // button press detection and webhook trigger function
-void handleButton(unsigned long now) {
+void handleButton(unsigned long now, const SensorData& data) {
   // debounce edge detection
   static bool lastRaw = readPressedRaw();
   bool raw = readPressedRaw();
@@ -132,23 +175,13 @@ void handleButton(unsigned long now) {
       sentForThisHold = true;
       Serial.println("[BUTTON] long-press detected → sending webhook");
 
-      // read BME280 values
-      float hum   = bme.readHumidity();
-      float tempC = bme.readTemperature();
-      float tempF = tempC * 9.0 / 5.0 + 32.0;
-
-      // steps
-      int stepCount = steps;
-
-      // heart rate (placeholder, replace with real MAX30105 readings)
-      float heartRate = 0; // TODO: implement MAX30105 heart rate reading
-
+      // TODO: SEND ALERT IF USER HAS FALLEN
       // build combined message
       String msg = "Help button held for 3s\n";
-      msg += "Temp: " + String(tempC, 2) + " C / " + String(tempF, 2) + " F\n";
-      msg += "Humidity: " + String(hum, 2) + " %\n";
-      msg += "Steps: " + String(stepCount) + "\n";
-      msg += "Heart Rate: " + String(heartRate, 1) + " bpm\n";
+      msg += "Temperature: " + String(data.tempC, 2) + " C / " + String(data.tempF, 2) + " F\n";
+      msg += "Humidity: " + String(data.humidity, 2) + " %\n";
+      msg += "Steps: " + String(data.steps) + "\n";
+      msg += "Heart Rate: " + String(data.heartRate, 1) + " bpm\n";
 
       // display on TFT
       tft.setCursor(0, 0);
@@ -215,4 +248,3 @@ void sendWebhook(const String& event, const String& msg) {
   Serial.printf("[WEBHOOK] POST %d %s\n", code, body.c_str());
   http.end();
 }
-
