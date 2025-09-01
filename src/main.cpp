@@ -11,11 +11,11 @@
 // Webhook configuration
 const char* WIFI_SSID      = "wifi id"; // CHANGE THIS TO MATCH WIFI <--- !!!
 const char* WIFI_PASS      = "wifi password";
-const char* WEBHOOK_URL    = "https://safe-step-vercel-webhook-receiver.vercel.app/api/alert"; // vercel URL
-const char* WEBHOOK_SECRET = "group5-secret";                              // MUST match Vercel env var WEBHOOK_SECRET
+#define WEBHOOK_URL "https://webhook-server-rosy.vercel.app/api/alert"      // vercel URL
+const char* WEBHOOK_SECRET = "group5-secret";                               // MUST match Vercel env var WEBHOOK_SECRET
 
 // Button constants
-const int BUTTON_PIN = 0;                         // CHANGE THIS to actual button pin. <--- !!!
+const int BUTTON_PIN = 25;                         // CHANGE THIS to actual button pin. <--- !!!
   // NOTE: current implementation uses INPUT_PULLUP. So button is connected to BUTTON_PIN and GND. Reads LOW when pressed. <--- !!!
 const unsigned long LONG_PRESS_MS = 3000;         // hold time to trigger webhook
 const unsigned long DEBOUNCE_MS    = 40;          // debounce window
@@ -156,7 +156,7 @@ void handleButton(unsigned long now) {
       tft.println("ALERT: Long press");
 
       // send webhook with all sensor data
-      sendWebhook("button_long_press", msg);
+      sendWebhook("FALL DETECTED", msg);
     }
   }
 }
@@ -178,6 +178,16 @@ void connectWiFi() {
   }
 }
 
+// Helper function to escape JSON special characters
+String escapeJson(const String &s) {
+  String out = s;
+  out.replace("\\", "\\\\");
+  out.replace("\"", "\\\"");
+  out.replace("\n", "\\n");
+  out.replace("\r", "\\r");
+  return out;
+}
+
 // webhook post helper function
 void sendWebhook(const String& event, const String& msg) {
   connectWiFi();
@@ -187,17 +197,22 @@ void sendWebhook(const String& event, const String& msg) {
   }
 
   HTTPClient http;
+
   http.setTimeout(6000);
   http.begin(WEBHOOK_URL);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Webhook-Secret", WEBHOOK_SECRET);
 
-  // json payload - add more fields later (bpm/temp/steps/etc.)
+  // escape the message
+  String safeMsg = escapeJson(msg);
+
+  // JSON payload
   String body = String("{\"event\":\"") + event +
-                "\",\"msg\":\"" + msg +
+                "\",\"msg\":\"" + safeMsg +
                 "\",\"ts\":" + millis() + "}";
 
   int code = http.POST(body);
   Serial.printf("[WEBHOOK] POST %d %s\n", code, body.c_str());
   http.end();
 }
+
