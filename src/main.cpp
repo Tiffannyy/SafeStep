@@ -21,23 +21,9 @@ const int BUTTON_PIN = 0;                         // CHANGE THIS to actual butto
 const unsigned long LONG_PRESS_MS = 3000;         // hold time to trigger webhook
 const unsigned long DEBOUNCE_MS    = 40;          // debounce window
 
-// Display initialization
+// Sensor and display initialization
+SensorData sensorData;
 TFT_eSPI tft = TFT_eSPI();  // TFT display
-
-// MPU variables
-int steps = 0;                        // step count
-// ** acceleration thresholds for step detection **
-float threshold = 3.0;                // general threshold for step detection
-float upperThreshold = 3.0;           // threshold for step start
-float lowerThreshold = 1.0;           // threshold for reset
-
-bool repeatFlag = false;              // bool to prevent multiple steps recorded in one step
-unsigned long lastStep = 0;           // time of last step
-const unsigned long stepDelay = 400;  // delay between recorded steps
-
-// BME280 variables
-const int delayTime = 10000; // delay between readings
-unsigned long startTime = millis();
 
 // Button variables
 bool pressedStable = false;             // updated if button is held past debounce length
@@ -51,7 +37,7 @@ int beatAvg;
 // Function prototypes
 void connectWiFi();
 void sendWebhook(const String& event, const String& msg);
-void handleButton(unsigned long now);
+void handleButton(unsigned long now, const SensorData& data);
 static inline bool readPressedRaw();
 
 // Begin program
@@ -109,16 +95,16 @@ void loop() {
   unsigned long now = millis();
 
   // MPU6050 step tracker
-  stepTracker(now);
+  stepTracker(now, sensorData);
   // MPU6050 fall detection
-  fallDetector(now);
+  fallDetector(now, sensorData);
   // bme temp and humidity read
-  bmeRead(now);
+  bmeRead(now, sensorData);
   // heartbeat
-  heartbeat(now);
+  heartbeat(now, sensorData);
 
   // check for button press. If pressed, send webhook
-  handleButton(now);
+  handleButton(now, sensorData);
 
 }
 
@@ -128,7 +114,7 @@ static inline bool readPressedRaw() {
 }
 
 // button press detection and webhook trigger function
-void handleButton(unsigned long now) {
+void handleButton(unsigned long now, const SensorData& data) {
   // debounce edge detection
   static bool lastRaw = readPressedRaw();
   bool raw = readPressedRaw();
@@ -165,24 +151,12 @@ void handleButton(unsigned long now) {
       sentForThisHold = true;
       Serial.println("[BUTTON] long-press detected → sending webhook");
 
-      // read BME280 values
-      float hum   = bme.readHumidity();
-      float tempC = bme.readTemperature();
-      float tempF = tempC * 9.0 / 5.0 + 32.0;
-
-      // steps
-      int stepCount = steps;
-
-      // heart rate (placeholder, replace with real MAX30105 readings)
-      float heartRate = 0; // TODO: implement MAX30105 heart rate reading
-
-      // TODO: Combine functions
       // build combined message
       String msg = "Help button held for 3s\n";
-      msg += "Temp: " + String(tempC, 2) + " C / " + String(tempF, 2) + " F\n";
-      msg += "Humidity: " + String(hum, 2) + " %\n";
-      msg += "Steps: " + String(stepCount) + "\n";
-      msg += "Heart Rate: " + String(heartRate, 1) + " bpm\n";
+      msg += "Temperature: " + String(data.tempC, 2) + " C / " + String(data.tempF, 2) + " F\n";
+      msg += "Humidity: " + String(data.humidity, 2) + " %\n";
+      msg += "Steps: " + String(data.steps) + "\n";
+      msg += "Heart Rate: " + String(data.heartRate, 1) + " bpm\n";
 
       // display on TFT
       tft.setCursor(0, 0);
