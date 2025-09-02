@@ -64,7 +64,7 @@ void stepTracker(unsigned long now, SensorData &data) {
 }
 
 // MPU6050 fall detection
-void fallDetector(unsigned long now, SensorData &data) {
+bool fallDetector(unsigned long now, SensorData &data) {
   // sensor events
   sensors_event_t accel;
   sensors_event_t gyro;
@@ -80,7 +80,8 @@ void fallDetector(unsigned long now, SensorData &data) {
     if (accelMag < FREE_FALL_THRESHOLD) {
       freeFallDetected = true;
       freeFallTime = now;
-      Serial.println("Free fall detected!");
+      // NOTE: uncoment for debugging
+      // Serial.println("Free fall detected!");
     }
   }
   else{
@@ -88,8 +89,7 @@ void fallDetector(unsigned long now, SensorData &data) {
     unsigned long elapsed = now - freeFallTime;
     if (accelMag > IMPACT_THRESHOLD){
       if (isOrientationFall(accel)) {
-        Serial.println("** IMPACT DETECTED! **");
-        // TODO: add impact handling code (e.g., alert, log, etc.)
+        return true;
       }
       // reset free fall detection
       freeFallDetected = false;
@@ -99,6 +99,7 @@ void fallDetector(unsigned long now, SensorData &data) {
       freeFallDetected = false;
     }
   }
+  return false;
 }
 
 // BME temp/humidity

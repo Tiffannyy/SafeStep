@@ -10,17 +10,22 @@
 #define SEALEVELPRESSURE_HPA (1013.25)  // bme
 #define WEBHOOK_URL "https://webhook-server-rosy.vercel.app/api/alert"      // vercel URL
 
+// Fall detection variables
+bool fallPending = false;
+unsigned long fallDetectedMs = 0;
+const unsigned long FALL_TIMEOUT_MS = 30000;    // 30s time slot to cancel alert
+
 // TFT variables
 unsigned long lastUpdate = 0;
-const unsigned long UPDATE_INTERVAL = 500; // ms
+const unsigned long UPDATE_INTERVAL = 500;      // ms
 
 // Webhook configuration
-const char* WIFI_SSID      = "wifi id"; // CHANGE THIS TO MATCH WIFI <--- !!!
+const char* WIFI_SSID      = "wifi id";         // CHANGE THIS TO MATCH WIFI <--- !!!
 const char* WIFI_PASS      = "wifi password";
 const char* WEBHOOK_SECRET = "group5-secret";                               // MUST match Vercel env var WEBHOOK_SECRET
 
 // Button constants
-const int BUTTON_PIN = 25;                         // CHANGE THIS to actual button pin. <--- !!!
+const int BUTTON_PIN = 25;                        // CHANGE THIS to actual button pin. <--- !!!
 // NOTE: current implementation uses INPUT_PULLUP. So button is connected to BUTTON_PIN and GND. Reads LOW when pressed. <--- !!!
 const unsigned long LONG_PRESS_MS = 3000;         // hold time to trigger webhook
 const unsigned long DEBOUNCE_MS    = 40;          // debounce window
@@ -102,19 +107,57 @@ void loop() {
   // MPU6050 step tracker
   stepTracker(now, sensorData);
   // MPU6050 fall detection
-  fallDetector(now, sensorData);
+  bool fall = fallDetector(now, sensorData);
+  if (fall && !fallPending){
+    fallPending = true;
+    fallDetectedMs = now;
+    Serial.println("** FALL DETECTED! **");
+  }
+
   // bme temp and humidity read
   bmeRead(now, sensorData);
   // heartbeat
   heartbeat(now, sensorData);
-
-  // check for button press. If pressed, send webhook
-  handleButton(now, sensorData);
-  
-  if (now - lastUpdate >= UPDATE_INTERVAL){
+  // tft display
+  if (!fallPending && (now - lastUpdate >= UPDATE_INTERVAL)){
     displayData(sensorData);
     lastUpdate = now;
   }
+
+
+  // fall check
+  if (fallPending){
+    unsigned long elapsed = now - fallDetectedMs;
+    int remaining = (FALL_TIMEOUT_MS - elapsed) / 1000;
+
+    static int lastRemaining = -1;
+    if (remaining != lastRemaining){
+      lastRemaining = remaining;
+      tft.fillScreen(TFT_BLACK);
+      tft.setCursor(0,0);
+      tft.println("FALL DETECTED!");
+      tft.println("Hold button for 3 seconds to cancel alert");
+      tft.printf("Auto alert in %d s\n", remaining);
+    }
+  
+  }
+  if (fallPending && (now - fallDetectedMs >= FALL_TIMEOUT_MS)) {
+    Serial.println("[FALL] No button press in 30s -> sending automatic webhook");
+
+    String msg = "Fall detected (no response)\n";
+    msg += "Temperature: " + String(sensorData.tempC, 2) + " C / " + String(sensorData.tempF, 2) + " F\n";
+    msg += "Humidity: " + String(sensorData.humidity, 2) + " %\n";
+    msg += "Steps: " + String(sensorData.steps) + "\n";
+    msg += "Heart Rate: " + String(sensorData.heartRate, 1) + " bpm\n";
+
+    sendWebhook("FALL DETECTED (NO RESPONSE)", msg);
+
+    // reset pending state
+    fallPending = false;
+  }
+
+  // button check
+  handleButton(now, sensorData);
 }
 
 // Display data
@@ -162,7 +205,7 @@ void handleButton(unsigned long now, const SensorData& data) {
         if (!sentForThisHold) {
           Serial.println("[BUTTON] released (no long-press)");
         } else {
-          Serial.println("[BUTTON] released (alert already sent)");
+          Serial.println("[BUTTON] released (long press)");
         }
         sentForThisHold = false; // allow next hold to alert again
       }
@@ -173,20 +216,22 @@ void handleButton(unsigned long now, const SensorData& data) {
   if (pressedStable && !sentForThisHold) {
     if (now - pressStartMs >= LONG_PRESS_MS) {
       sentForThisHold = true;
-      Serial.println("[BUTTON] long-press detected → sending webhook");
 
-      // TODO: SEND ALERT IF USER HAS FALLEN
+      // don't send alert if button has been held for 3 seconds
+      if (fallPending){
+          fallPending = false;
+          tft.fillScreen(TFT_BLACK);
+          tft.setCursor(0, 0);
+          tft.println("Fall Dismissed");
+          return;
+      }
+
       // build combined message
-      String msg = "Help button held for 3s\n";
+      String msg = "Fall detected with no response!\n";
       msg += "Temperature: " + String(data.tempC, 2) + " C / " + String(data.tempF, 2) + " F\n";
       msg += "Humidity: " + String(data.humidity, 2) + " %\n";
       msg += "Steps: " + String(data.steps) + "\n";
       msg += "Heart Rate: " + String(data.heartRate, 1) + " bpm\n";
-
-      // display on TFT
-      tft.setCursor(0, 0);
-      tft.fillScreen(TFT_BLACK);
-      tft.println("ALERT: Long press");
 
       // send webhook with all sensor data
       sendWebhook("FALL DETECTED", msg);
