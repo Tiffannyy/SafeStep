@@ -6,11 +6,13 @@ Adafruit_BME280 bme;        // temperature, humidity, and pressure
 MAX30105 max30102;          // heart rate and SpO2
 Adafruit_Sensor *mpu_accel, *mpu_gyro;
 
+TFT_eSPI tft = TFT_eSPI();;
+
 // MPU variables
 // ** acceleration thresholds for step detection **
-float threshold = 3.0;                // general threshold for step detection
-float upperThreshold = 3.5;           // threshold for step start
-float lowerThreshold = 1.0;           // threshold for reset
+float upperThreshold;           // threshold for step start
+float lowerThreshold;           // threshold for reset
+float mean;
 
 bool repeatFlag = false;              // bool to prevent multiple steps recorded in one step
 unsigned long lastStep = 0;           // time of last step
@@ -19,7 +21,7 @@ const unsigned long stepDelay = 400;  // delay between recorded steps
 // ** fall detection variables **
 // Fall detection parameters
 const float FREE_FALL_THRESHOLD = 4.9;        // m/2^2
-const float IMPACT_THRESHOLD = 18.6;          // m/s^2   normal force + sudden change in acceleration
+const float IMPACT_THRESHOLD = 22.3;          // m/s^2   normal force + sudden change in acceleration
 const unsigned long FALL_TIME_WINDOW = 1000;  // ms time window after free fall
 unsigned long freeFallTime = 0;
 bool freeFallDetected = false;
@@ -39,16 +41,62 @@ const unsigned long UPDATE_INTERVAL = 1000; // update every 1 second
 
 
 // MPU6050 step tracker
+void stepCalibration(unsigned long now){
+  float sum = 0;
+  float sumSq = 0;
+  int count = 0;
+
+  unsigned int last = now;
+  
+  // calibrate for 10 s
+  int i = 10;
+  while(millis() - now < 10000){
+    if (millis() - last >= 1000){
+      last += 1000;
+      i--;
+      tft.fillScreen(TFT_BLACK);
+      tft.setCursor(0,0);
+      tft.println("Calibrating...\n");
+      tft.print(i);
+      tft.println("s remaining");
+    }
+  
+    sensors_event_t accel;        // sensor event
+    mpu_accel->getEvent(&accel);
+
+    float accelMag = accel.acceleration.x * accel.acceleration.x +
+                    accel.acceleration.y * accel.acceleration.y +
+                    accel.acceleration.z * accel.acceleration.z;
+    accelMag = sqrt(accelMag);    // magnitude of acceleration vector
+
+    sum += accelMag;
+    sumSq += accelMag * accelMag;
+    count++;
+  }
+  mean = sum / count;
+  float variance = (sumSq / count) - (mean * mean);
+  float stdDev = sqrt(variance);
+
+  Serial.printf("THRESHOLD:%f", mean);
+  upperThreshold = stdDev * 0.94;                     // threshold for step start
+  lowerThreshold = stdDev * 0.3;                            // threshold for step reset
+}
+
 void stepTracker(unsigned long now, SensorData &data) {
   sensors_event_t accel;        // sensor event
   mpu_accel->getEvent(&accel);
 
   // acceleration calculation
-  float accelMag = accel.acceleration.x * accel.acceleration.x +
-                   accel.acceleration.y * accel.acceleration.y +
-                   accel.acceleration.z * accel.acceleration.z;
-  accelMag = sqrt(accelMag); // magnitude of acceleration vector
-  float dynamicAccel = fabs(accelMag - 9.8); // subtract gravity from magnitude;
+  float accelMag = sqrt(
+    accel.acceleration.x * accel.acceleration.x +
+    accel.acceleration.y * accel.acceleration.y +
+    accel.acceleration.z * accel.acceleration.z);
+
+  // low pass filter
+  const float alpha = 0.3;  // smoothing factor [0,1]
+  static float filteredAccel = 0;
+  filteredAccel = alpha * accelMag + (1 - alpha) * filteredAccel;
+  float dynamicAccel = fabs(filteredAccel - mean);          // subtract gravity from magnitude;
 
   // check accel threshold, if accel exceeds threshold, record step
   if (!repeatFlag && dynamicAccel > upperThreshold && now - lastStep > stepDelay) {

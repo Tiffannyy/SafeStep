@@ -52,8 +52,9 @@ extern unsigned long startTimeBME;
 extern unsigned long startTimeHB;
 
 // Function prototypes
+void stepCalibration(unsigned long now);
 void stepTracker(unsigned long now, SensorData &data);
-void bmeRead(unsigned long now, SensorData &data); 
+void bmeRead(unsigned long now, SensorData &data);
 bool fallDetector(unsigned long now, SensorData &data);
 void heartbeat(unsigned long now, SensorData &data);
 float calculatePitch(const sensors_event_t& accel);
