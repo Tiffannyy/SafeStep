@@ -36,6 +36,9 @@ byte rateSpot = 0;
 long lastBeat = 0;          // time at which last hb occured
 static unsigned long lastUpdate = 0;
 const unsigned long UPDATE_INTERVAL = 1000; // update every 1 second
+const int HR_LOW_BPM = 30;                      // alert if sustained below this
+const int HR_RECOVER_BPM = 50;                  // reset once above this
+const unsigned long HR_LOW_DURATION_MS = 3000;  // must be low for 3s
 
 
 // MPU6050 step tracker
@@ -89,7 +92,7 @@ void fallDetector(unsigned long now, SensorData &data) {
     if (accelMag > IMPACT_THRESHOLD){
       if (isOrientationFall(accel)) {
         Serial.println("** IMPACT DETECTED! **");
-        // TODO: add impact handling code (e.g., alert, log, etc.)
+        data.fallDetected = true;   // raise fall alert if fall detected
       }
       // reset free fall detection
       freeFallDetected = false;
@@ -142,6 +145,8 @@ bool isOrientationFall(const sensors_event_t& accel) {
 void heartbeat(unsigned long now, SensorData &data){
   long irValue = max30102.getIR();      // infrared
   static int lastValidBPM = 0;        // remember last valid BPM
+  static unsigned long heartAlertStart = 0;
+  static bool heartAlertSent = false;
   
   if (checkForBeat(irValue)){
     // hb sensed
@@ -177,4 +182,17 @@ void heartbeat(unsigned long now, SensorData &data){
   if (data.heartRate <= 0){
       data.heartRate = lastValidBPM;
   }
+
+  int bpm = data.heartRate;
+  if (bpm > 0 && bpm < HR_LOW_BPM) {
+    if (heartAlertStart == 0) heartAlertStart = now;
+    if (!heartAlertSent && (now - heartAlertStart >= HR_LOW_DURATION_MS)) {
+      data.lowHRDetected = true;                  // raise low-HR alert
+      heartAlertSent = true;                      // set true until recovery
+    }
+  } else if (bpm >= HR_RECOVER_BPM) {             // recovered
+    heartAlertStart = 0;
+    heartAlertSent = false;
+  }
+
 }

@@ -14,6 +14,9 @@ struct SensorData {
     float humidity;
     int steps;
     int heartRate;  // optional for now, can leave unused
+
+    bool fallDetected = false;  // used to send alerts
+    bool lowHRDetected = false;
 };
 
 // Sensor initalization

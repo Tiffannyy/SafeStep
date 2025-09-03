@@ -8,7 +8,7 @@
 
 // definitions
 #define SEALEVELPRESSURE_HPA (1013.25)  // bme
-#define WEBHOOK_URL "https://webhook-server-rosy.vercel.app/api/alert"      // vercel URL
+#define WEBHOOK_URL "https://safe-step-vercel-webhook-receiver.vercel.app/"      // vercel URL
 
 // TFT variables
 unsigned long lastUpdate = 0;
@@ -35,6 +35,10 @@ bool sentForThisHold = false;           // only sends one webhook per button pre
 unsigned long lastEdgeMs = 0;           // last time raw input toggled
 unsigned long pressStartMs = 0;         // when the current press started
 
+// AutoAlert variables
+static unsigned long lastAutoAlertMs = 0;     // time of last auto alert
+const unsigned long AUTO_COOLDOWN_MS = 30000; // 30s between auto alerts
+
 float BPM;
 int beatAvg;
 
@@ -44,6 +48,7 @@ void connectWiFi();
 void sendWebhook(const String& event, const String& msg);
 void handleButton(unsigned long now, const SensorData& data);
 static inline bool readPressedRaw();
+void checkAutoAlerts(unsigned long now, SensorData& data);
 
 // Begin program
 void setup() {
@@ -110,6 +115,8 @@ void loop() {
 
   // check for button press. If pressed, send webhook
   handleButton(now, sensorData);
+
+  checkAutoAlerts(now, sensorData);
   
   if (now - lastUpdate >= UPDATE_INTERVAL){
     displayData(sensorData);
@@ -175,7 +182,6 @@ void handleButton(unsigned long now, const SensorData& data) {
       sentForThisHold = true;
       Serial.println("[BUTTON] long-press detected → sending webhook");
 
-      // TODO: SEND ALERT IF USER HAS FALLEN
       // build combined message
       String msg = "Help button held for 3s\n";
       msg += "Temperature: " + String(data.tempC, 2) + " C / " + String(data.tempF, 2) + " F\n";
@@ -189,9 +195,49 @@ void handleButton(unsigned long now, const SensorData& data) {
       tft.println("ALERT: Long press");
 
       // send webhook with all sensor data
-      sendWebhook("FALL DETECTED", msg);
+      sendWebhook("button_long_press", msg);
     }
   }
+}
+
+// send webhook if fall or low heartrate detected
+void checkAutoAlerts(unsigned long now, SensorData& data) {
+
+  bool wantFall = data.fallDetected;
+  bool wantLowHR = data.lowHRDetected;
+
+  if (!(wantFall || wantLowHR)) return;
+  if (now - lastAutoAlertMs < AUTO_COOLDOWN_MS) {
+    // clear flags for retriggering
+    data.fallDetected = false;
+    data.lowHRDetected = false;
+    return;
+  }
+
+  // build combined msg
+  String msg;
+  if (wantFall)  msg += "Automatic Alert: Fall Detected\n";
+  if (wantLowHR) msg += "Automatic Alert: Low Heartrate\n";
+  msg += "Temp: "     + String(data.tempC, 2) + " C / " + String(data.tempF, 2) + " F\n";
+  msg += "Humidity: " + String(data.humidity, 2) + " %\n";
+  msg += "Steps: "    + String(data.steps) + "\n";
+  msg += "Heart Rate: " + String(data.heartRate) + " bpm\n";
+
+  // display on TFT
+  tft.fillScreen(TFT_BLACK);
+  tft.setCursor(0, 0);
+  tft.println("ALERT: Automatic Alert");
+
+  // choose an event string
+  String event = wantFall ? "fall_detected" : "low_heart_rate";
+  if (wantFall && wantLowHR) event = "fall_and_low_hr";
+
+  sendWebhook(event, msg);
+
+  // reset flags and cooldown
+  data.fallDetected = false;
+  data.lowHRDetected = false;
+  lastAutoAlertMs = now;
 }
 
 // wifi connection helper function
