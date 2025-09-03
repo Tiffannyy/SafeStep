@@ -16,7 +16,7 @@ float mean;
 
 bool repeatFlag = false;              // bool to prevent multiple steps recorded in one step
 unsigned long lastStep = 0;           // time of last step
-const unsigned long stepDelay = 400;  // delay between recorded steps
+const unsigned long stepDelay = 300;  // delay between recorded steps
 
 // ** fall detection variables **
 // Fall detection parameters
@@ -38,7 +38,6 @@ byte rateSpot = 0;
 long lastBeat = 0;          // time at which last hb occured
 static unsigned long lastUpdate = 0;
 const unsigned long UPDATE_INTERVAL = 1000; // update every 1 second
-
 
 // MPU6050 step tracker
 void stepCalibration(unsigned long now){
@@ -77,9 +76,12 @@ void stepCalibration(unsigned long now){
   float variance = (sumSq / count) - (mean * mean);
   float stdDev = sqrt(variance);
 
-  Serial.printf("THRESHOLD:%f", mean);
-  upperThreshold = stdDev * 0.94;                     // threshold for step start
-  lowerThreshold = stdDev * 0.3;                            // threshold for step reset
+  upperThreshold = stdDev * 0.95;             // threshold for step start
+  lowerThreshold = stdDev * 0.28;             // threshold for step reset
+  // Note: uncomment for debug
+  // Serial.printf("MEAN: %f\n", mean);
+  // Serial.printf("Upper Threshold: %f\n", upperThreshold);
+  // Serial.printf("Lower Threshold: %f\n", lowerThreshold);
 }
 
 void stepTracker(unsigned long now, SensorData &data) {
@@ -93,10 +95,13 @@ void stepTracker(unsigned long now, SensorData &data) {
     accel.acceleration.z * accel.acceleration.z);
 
   // low pass filter
-  const float alpha = 0.3;  // smoothing factor [0,1]
-  static float filteredAccel = 0;
+  const float alpha = 0.2;  // smoothing factor [0,1]
+  static float filteredAccel = mean;
   filteredAccel = alpha * accelMag + (1 - alpha) * filteredAccel;
-  float dynamicAccel = fabs(filteredAccel - mean);          // subtract gravity from magnitude;
+  float dynamicAccel = fabs(filteredAccel - mean);          // subtract gravity from magnitude
+
+  // Note: uncomment for debug
+  // Serial.printf("DynAccel: %.2f  Upper: %.2f\n", dynamicAccel, upperThreshold);
 
   // check accel threshold, if accel exceeds threshold, record step
   if (!repeatFlag && dynamicAccel > upperThreshold && now - lastStep > stepDelay) {

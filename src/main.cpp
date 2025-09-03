@@ -1,39 +1,67 @@
 #include <sensors.h>
+#include <secrets.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
-
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <string>
+#include <ESP_Mail_Client.h>
 
-// definitions
+// --Definitions--
 #define SEALEVELPRESSURE_HPA (1013.25)  // bme
-#define WEBHOOK_URL "https://webhook-server-rosy.vercel.app/api/alert"      // vercel URL
 
-// Fall detection variables
+// WiFi Credentials
+// TODO: add wifi credentials to secrets.h
+
+// Azure IoT Hub config
+// TODO: generate a token on IoT Hub, sensitive info
+#define SAS_TOKEN "TOKEN"
+
+// Root CA certificate for Azure IoT Hub
+// run openssl s_client -showcerts -connect [your hub name].azure-devices.net:443 in azure terminal
+// TODO: retrieve root ca, add to secrets.h sensitive info
+
+String iothubName = "hubname"; //Your hub name (replace if needed)
+String deviceName = "devicename"; // Your device name (replace if needed)
+String url = "https://" + iothubName + ".azure-devices.net/devices/" +
+deviceName + "/messages/events?api-version=2021-04-12";
+
+// Telemetry interval
+#define TELEMETRY_INTERVAL 5000 // Send data every 5 seconds
+
+uint8_t count = 0;
+uint32_t lastTelemetryTime = 0;
+
+// --Gmail STMP config--
+// TODO: change AUTHOR_EMAIL to user email, and use an app password (in secrets.h)
+#define SMTP_HOST "smtp.gmail.com"
+#define SMTP_PORT 465
+#define AUTHOR_DOMAIN ""
+// TODO: Change recipient info, add email in secrets.h
+#define RECIPIENT_NAME "Recipient"
+
+// --Fall detection variables--
 bool fallPending = false;
 unsigned long fallDetectedMs = 0;
 const unsigned long FALL_TIMEOUT_MS = 30000;    // 30s time slot to cancel alert
 
-// TFT variables
+// --TFT variables--
 unsigned long lastUpdate = 0;
-const unsigned long UPDATE_INTERVAL = 500;      // ms
+const unsigned long UPDATE_INTERVAL = 500;      // ms                            // MUST match Vercel env var WEBHOOK_SECRET
 
-// Webhook configuration
-const char* WIFI_SSID      = "wifi id";         // CHANGE THIS TO MATCH WIFI <--- !!!
-const char* WIFI_PASS      = "wifi password";
-const char* WEBHOOK_SECRET = "group5-secret";                               // MUST match Vercel env var WEBHOOK_SECRET
-
-// Button constants
+// --Button constants--
 const int BUTTON_PIN = 25;                        // CHANGE THIS to actual button pin. <--- !!!
 // NOTE: current implementation uses INPUT_PULLUP. So button is connected to BUTTON_PIN and GND. Reads LOW when pressed. <--- !!!
 const unsigned long LONG_PRESS_MS = 3000;         // hold time to trigger webhook
 const unsigned long DEBOUNCE_MS    = 40;          // debounce window
 
-// Sensor initialization
+// --Sensor initialization--
 SensorData sensorData;
 
-// Button variables
+// --Button variables--
 bool pressedStable = false;             // updated if button is held past debounce length
 bool sentForThisHold = false;           // only sends one webhook per button press
 unsigned long lastEdgeMs = 0;           // last time raw input toggled
@@ -42,14 +70,15 @@ unsigned long pressStartMs = 0;         // when the current press started
 float BPM;
 int beatAvg;
 
-// Function prototypes
+// --Function prototypes--
 void displayData(const SensorData& data);
 void connectWiFi();
-void sendWebhook(const String& event, const String& msg);
+void sendData(unsigned long now, const SensorData& data);
 void handleButton(unsigned long now, const SensorData& data);
 static inline bool readPressedRaw();
+void sendEmailAlert(String subject, String msg);
 
-// Begin program
+// --Begin program--
 void setup() {
   Serial.begin(115200);
   while (!Serial) {
@@ -69,13 +98,13 @@ void setup() {
 
   // Wait for devices
   if (!mpu.begin()) {
-    Serial.println("Failed to find MPU6050...");
+    Serial.println("Failed to find MPU6050");
 
     while (1) delay(1000);
   }
 
   if (!bme.begin()){
-    Serial.println("Failed to find BME280...");
+    Serial.println("Failed to find BME280");
     while (1) delay(1000);
   }
 
@@ -96,6 +125,7 @@ void setup() {
   connectWiFi();
 
   tft.println("Booting...");
+  delay(500);
 
   // ---Calibrations---
   stepCalibration(millis());
@@ -126,7 +156,6 @@ void loop() {
     lastUpdate = now;
   }
 
-
   // fall check
   if (fallPending){
     unsigned long elapsed = now - fallDetectedMs;
@@ -143,16 +172,19 @@ void loop() {
     }
   
   }
+  // alert was not cancelled, send an alert
   if (fallPending && (now - fallDetectedMs >= FALL_TIMEOUT_MS)) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor(0,0);
+    tft.println("SENDING ALERT!");
+
     Serial.println("[FALL] No button press in 30s -> sending automatic webhook");
 
-    String msg = "FALL DETECTED, User may need assistance!\n";
-    msg += "Temperature: " + String(sensorData.tempC, 2) + " C / " + String(sensorData.tempF, 2) + " F\n";
-    msg += "Humidity: " + String(sensorData.humidity, 2) + " %\n";
-    msg += "Steps: " + String(sensorData.steps) + "\n";
-    msg += "Heart Rate: " + String(sensorData.heartRate, 1) + " bpm\n";
-
-    sendWebhook("Fall Detected, (NO RESPONSE)", msg);
+    String message = "This is a SafeStep alert:\nThe current user of the " \
+                    "device has fallen and has not cancelled the alert.\n" \
+                    "Assistance may be required!";
+    
+    sendEmailAlert("[SafeStep Alert] Assistance Requested", message);
 
     // reset pending state
     fallPending = false;
@@ -160,6 +192,12 @@ void loop() {
 
   // button check
   handleButton(now, sensorData);
+  
+  // send data
+  if (now - lastTelemetryTime >= TELEMETRY_INTERVAL){
+    sendData(now, sensorData);
+    lastTelemetryTime = now;
+  }
 }
 
 // Display data
@@ -228,16 +266,6 @@ void handleButton(unsigned long now, const SensorData& data) {
         tft.fillScreen(TFT_BLACK);
         tft.setCursor(0, 0);
         tft.println("Fall Dismissed");
-
-        // build combined message
-        String msg = "Fall alert cancelled!\n";
-        msg += "Temperature: " + String(data.tempC, 2) + " C / " + String(data.tempF, 2) + " F\n";
-        msg += "Humidity: " + String(data.humidity, 2) + " %\n";
-        msg += "Steps: " + String(data.steps) + "\n";
-        msg += "Heart Rate: " + String(data.heartRate, 1) + " bpm\n";
-
-        // send webhook with all sensor data
-        sendWebhook("Fall Detected, CANCEL", msg);
       }
     }
   }
@@ -247,7 +275,7 @@ void handleButton(unsigned long now, const SensorData& data) {
 void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
     delay(200);
@@ -260,40 +288,71 @@ void connectWiFi() {
   }
 }
 
-// Helper function to escape JSON special characters
-String escapeJson(const String &s) {
-  String out = s;
-  out.replace("\\", "\\\\");
-  out.replace("\"", "\\\"");
-  out.replace("\n", "\\n");
-  out.replace("\r", "\\r");
-  return out;
+// Send data to Azure
+void sendData(unsigned long now, const SensorData& data) {
+  // create JSON
+  ArduinoJson::JsonDocument doc;
+  doc["temperature"]  = data.tempC;
+  doc["humidity"]     = data.humidity;
+  doc["heartrate"]    = data.heartRate;
+  doc["steps"]        = data.steps;
+  doc["timestamp"]    = now;
+  char buffer[256];
+  serializeJson(doc, buffer, sizeof(buffer));
+
+  // send JSON via HTTPS
+  WiFiClientSecure client;
+  client.setCACert(root_ca);    // Set root CA certificate
+
+  HTTPClient http;
+  http.setTimeout(6000);
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", SAS_TOKEN);
+
+  int httpCode = http.POST(buffer);
+  if (httpCode != 204) {        // IoT Hub returns 204 No Content for successful telemetry
+    Serial.println("Failed to send telemetry. HTTP code: " + String(httpCode));
+  }
+  // NOTE: Uncomment for debug
+  else{
+    Serial.println("[Telemetry] Sending JSON:");
+    Serial.println(buffer);
+  }
+  http.end();
 }
 
-// webhook post helper function
-void sendWebhook(const String& event, const String& msg) {
-  connectWiFi();
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WEBHOOK] Wi-Fi not connected; cannot send.");
+
+// --Email alert--
+void sendEmailAlert(String subject, String msg) {
+  SMTPSession smtp;
+  ESP_Mail_Session session;
+
+  session.server.host_name = SMTP_HOST;
+  session.server.port = SMTP_PORT;
+  session.login.email = AUTHOR_EMAIL;
+  session.login.password = AUTHOR_PASSWORD;
+  session.login.user_domain = AUTHOR_DOMAIN;
+
+  if (!smtp.connect(&session)) {
+    Serial.println("SMTP connection failed.");
     return;
   }
 
-  HTTPClient http;
+  SMTP_Message emailMsg;
+  emailMsg.sender.name = "IoT Alert";
+  emailMsg.sender.email = AUTHOR_EMAIL;
+  emailMsg.subject = subject;
+  emailMsg.addRecipient(RECIPIENT_NAME, RECIPIENT_EMAIL);
+  emailMsg.text.content = msg.c_str();
 
-  http.setTimeout(6000);
-  http.begin(WEBHOOK_URL);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Webhook-Secret", WEBHOOK_SECRET);
+  // send email
+  if (!MailClient.sendMail(&smtp, &emailMsg)) {
+    Serial.print("Error sending email: ");
+    Serial.println(smtp.errorReason());
+  } else {
+    Serial.println("Email sent");
+  }
 
-  // escape the message
-  String safeMsg = escapeJson(msg);
-
-  // JSON payload
-  String body = String("{\"event\":\"") + event +
-                "\",\"msg\":\"" + safeMsg +
-                "\",\"ts\":" + millis() + "}";
-
-  int code = http.POST(body);
-  Serial.printf("[WEBHOOK] POST %d %s\n", code, body.c_str());
-  http.end();
+  smtp.closeSession();
 }
