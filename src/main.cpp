@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 #include <string>
 #include <ESP_Mail_Client.h>
+#include <time.h>
 
 // --Definitions--
 #define SEALEVELPRESSURE_HPA (1013.25)  // bme
@@ -18,7 +19,7 @@
 
 // Azure IoT Hub config
 // TODO: generate a token on IoT Hub, sensitive info
-#define SAS_TOKEN "TOKEN"
+#define SAS_TOKEN "SECRET"
 
 // Root CA certificate for Azure IoT Hub
 // run openssl s_client -showcerts -connect [your hub name].azure-devices.net:443 in azure terminal
@@ -41,7 +42,10 @@ uint32_t lastTelemetryTime = 0;
 #define SMTP_PORT 465
 #define AUTHOR_DOMAIN ""
 // TODO: Change recipient info, add email in secrets.h
-#define RECIPIENT_NAME "Recipient"
+#define RECIPIENT_NAME "RECIPIENT"
+
+// time
+struct tm timeinfo;
 
 // --Fall detection variables--
 bool fallPending = false;
@@ -73,7 +77,7 @@ int beatAvg;
 // --Function prototypes--
 void displayData(const SensorData& data);
 void connectWiFi();
-void sendData(unsigned long now, const SensorData& data);
+void sendData(const SensorData& data);
 void handleButton(unsigned long now, const SensorData& data);
 static inline bool readPressedRaw();
 void sendEmailAlert(String subject, String msg);
@@ -99,7 +103,6 @@ void setup() {
   // Wait for devices
   if (!mpu.begin()) {
     Serial.println("Failed to find MPU6050");
-
     while (1) delay(1000);
   }
 
@@ -123,7 +126,16 @@ void setup() {
 
   // connect to wifi
   connectWiFi();
+  tft.println("Connecting to internet...");
 
+  // time
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  while (!getLocalTime(&timeinfo)){
+    delay(500);
+    Serial.print(".");
+  }
+
+  tft.fillScreen(TFT_BLACK);
   tft.println("Booting...");
   delay(500);
 
@@ -195,7 +207,7 @@ void loop() {
   
   // send data
   if (now - lastTelemetryTime >= TELEMETRY_INTERVAL){
-    sendData(now, sensorData);
+    sendData(sensorData);
     lastTelemetryTime = now;
   }
 }
@@ -205,7 +217,15 @@ void displayData(const SensorData& data){
     // display temp
     tft.fillScreen(TFT_BLACK);
     tft.setCursor(0, 0);
-    tft.printf("Temp:\n%.2f C\n", data.tempC);
+
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)){
+      char timeStr[16];
+      strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
+      tft.println(timeStr);
+    }
+  
+    tft.printf("\nTemp:\n%.2f C\n", data.tempC);
     tft.printf("%.2f F\n", data.tempF);
 
     // display humidity
@@ -215,7 +235,7 @@ void displayData(const SensorData& data){
     tft.printf("\n\nBPM:%d\n", data.heartRate);
 
     // display steps
-    tft.printf("\nSteps:%d", data.steps);
+    tft.printf("\nSteps:%d\n", data.steps);
 }
 
 // Helper functions for button handling
@@ -289,14 +309,17 @@ void connectWiFi() {
 }
 
 // Send data to Azure
-void sendData(unsigned long now, const SensorData& data) {
+void sendData(const SensorData& data) {
+  time_t currTime = time(nullptr);
+  uint64_t timestamp_ms = currTime * 1000ULL;
+
   // create JSON
   ArduinoJson::JsonDocument doc;
   doc["temperature"]  = data.tempC;
   doc["humidity"]     = data.humidity;
   doc["heartrate"]    = data.heartRate;
   doc["steps"]        = data.steps;
-  doc["timestamp"]    = now;
+  doc["timestamp"]    = timestamp_ms;
   char buffer[256];
   serializeJson(doc, buffer, sizeof(buffer));
 
