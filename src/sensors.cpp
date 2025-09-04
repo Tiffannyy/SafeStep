@@ -145,7 +145,6 @@ bool isOrientationFall(const sensors_event_t& accel) {
 // Helper function for heartbeat
 void heartbeat(unsigned long now, SensorData &data){
   long irValue = max30102.getIR();      // infrared
-  static int lastValidBPM = 0;        // remember last valid BPM
   static unsigned long heartAlertStart = 0;
   static bool heartAlertSent = false;
   
@@ -175,13 +174,7 @@ void heartbeat(unsigned long now, SensorData &data){
     }
     if (count > 0){
         data.heartRate = sum / count;
-        lastValidBPM = data.heartRate;
     }
-  }
-
-  // always keep last valid BPM so webhook can access it
-  if (data.heartRate <= 0){
-      data.heartRate = lastValidBPM;
   }
 
   int bpm = data.heartRate;
